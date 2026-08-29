@@ -26,7 +26,7 @@ import {
   recordSkillExperienceReviewOutcome,
 } from "./collection-review-state.js";
 import { runSkillExperienceReview, type ExperienceReviewCandidate } from "./experience-review.js";
-import { listSkillProposals } from "./service.js";
+import { getSkillProposalRunProgress, listSkillProposals } from "./service.js";
 
 const LIVE =
   isLiveTestEnabled(["OPENCLAW_LIVE_SKILL_EXPERIENCE_REVIEW"]) &&
@@ -457,6 +457,15 @@ describeLive("skill experience review live OpenAI eval", () => {
       getCurrentConfig: () => interruptedCandidate.config ?? {},
     });
     const afterInterrupted = await listSkillProposals({ workspaceDir });
-    expect(afterInterrupted.proposals.length).toBeGreaterThan(afterNegative.proposals.length);
+    // Capturing the recovery may revise a pending proposal instead of adding one.
+    const interruptedProgress = await getSkillProposalRunProgress({
+      workspaceDir,
+      runId: "live-interrupted",
+    });
+    expect(interruptedProgress.mutationCount).toBe(1);
+    expect(interruptedProgress.proposalIds).toHaveLength(1);
+    expect(afterInterrupted.proposals).toContainEqual(
+      expect.objectContaining({ id: interruptedProgress.proposalIds[0], status: "pending" }),
+    );
   }, 300_000);
 });
