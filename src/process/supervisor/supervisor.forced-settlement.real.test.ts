@@ -129,7 +129,9 @@ describe.skipIf(process.platform === "win32")("supervisor forced settlement outp
       const settledDelivered = [...delivered];
       const settledOutputAtMs = supervisor.getRecord(run.runId)?.lastOutputAtMs;
       const settledTicks = readTickCount(leakTickPath);
-      await new Promise((resolve) => setTimeout(resolve, LATE_OUTPUT_OBSERVATION_MS));
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, LATE_OUTPUT_OBSERVATION_MS);
+      });
 
       expect(exit.reason).toBe("manual-cancel");
       expect(digests.every((digest) => digest.length === 64)).toBe(true);
