@@ -235,104 +235,111 @@ describe("Anthropic Agent SDK runtime ownership", () => {
     expect(sideQuestion).not.toHaveProperty("execute");
   });
 
-  it("owns the selected-credential process tree while keeping its descriptor private and zeroed", async () => {
-    const backend = buildAnthropicCliBackend();
-    const token = "selected-private-descriptor-fixture";
-    const prepared = (await backend.prepareExecution?.({
-      workspaceDir: "/tmp/openclaw-workspace",
-      provider: "claude-cli",
-      modelId: "claude-sonnet-4-6",
-      executionMode: "agent",
-      authCredential: { type: "token", token },
-    } as Parameters<NonNullable<typeof backend.prepareExecution>>[0])) as {
-      env: Record<string, string>;
-      secretInput: { fd: 3; createData: () => Buffer };
-      execute: CliBackendExecute;
-      cleanup?: () => Promise<void>;
-    };
-    let deliveredBuffer: Buffer | undefined;
-    const originalCreateData = prepared.secretInput.createData;
-    vi.spyOn(prepared.secretInput, "createData").mockImplementation(() => {
-      deliveredBuffer = originalCreateData();
-      return deliveredBuffer;
-    });
-    let descriptorOutput: { fd: number; digest: string } | undefined;
-    useSdkMessages([SUCCESS_RESULT], async (options) => {
-      const spawnProcess = options.spawnClaudeCodeProcess as
-        | ((input: ClaudeAgentSdkSpawnOptions) => ClaudeAgentSdkSpawnedProcess)
-        | undefined;
-      if (!spawnProcess) {
-        throw new Error("Selected Claude credentials require an SDK-private descriptor spawner.");
-      }
-      const args = [
-        "-e",
-        [
-          'const data = require("node:fs").readFileSync(3);',
-          'require("node:fs").writeSync(2, Buffer.alloc(1024 * 1024));',
-          'const digest = require("node:crypto").createHash("sha256").update(data).digest("hex");',
-          'const descendant = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {stdio: "ignore"});',
-          "process.stdout.write(JSON.stringify({fd: Number(process.env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR), digest, descendantPid: descendant.pid}));",
-          "data.fill(0);",
-          "setInterval(() => {}, 1000);",
-        ].join(""),
-      ];
-      const env = { PATH: process.env.PATH, ...prepared.env };
-      expect(JSON.stringify(args)).not.toContain(token);
-      expect(Object.values(env)).not.toContain(token);
-      const child = spawnProcess({
-        command: process.execPath,
-        args,
-        cwd: process.cwd(),
-        env,
-        signal: new AbortController().signal,
-      });
-      const output = await new Promise<string>((resolve, reject) => {
-        let stdout = "";
-        child.stdout.on("data", (chunk: Buffer | string) => {
-          stdout += chunk.toString();
-          child.kill("SIGTERM");
-        });
-        child.once("error", reject);
-        child.once("exit", (code, signal) => {
-          if (signal === "SIGTERM" || (process.platform === "win32" && code !== null)) {
-            resolve(stdout);
-          } else {
-            reject(new Error(`Credential descriptor proof exited ${String(code)}.`));
-          }
-        });
-      });
-      const { descendantPid, ...descriptor } = JSON.parse(output) as {
-        fd: number;
-        digest: string;
-        descendantPid: number;
+  it.each([
+    { type: "token" as const, descriptor: "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR" },
+    { type: "api_key" as const, descriptor: "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR" },
+  ])(
+    "owns the selected $type process tree while keeping its descriptor private and zeroed",
+    async ({ type, descriptor: descriptorEnv }) => {
+      const backend = buildAnthropicCliBackend();
+      const token = "selected-private-descriptor-fixture";
+      const prepared = (await backend.prepareExecution?.({
+        workspaceDir: "/tmp/openclaw-workspace",
+        provider: "claude-cli",
+        modelId: "claude-sonnet-4-6",
+        executionMode: "agent",
+        authCredential: type === "token" ? { type, token } : { type, key: token },
+      } as Parameters<NonNullable<typeof backend.prepareExecution>>[0])) as {
+        env: Record<string, string>;
+        secretInput: { fd: 3; createData: () => Buffer };
+        execute: CliBackendExecute;
+        cleanup?: () => Promise<void>;
       };
-      descriptorOutput = descriptor;
-      try {
-        await vi.waitFor(() => expect(() => process.kill(descendantPid, 0)).toThrow());
-      } finally {
+      let deliveredBuffer: Buffer | undefined;
+      const originalCreateData = prepared.secretInput.createData;
+      vi.spyOn(prepared.secretInput, "createData").mockImplementation(() => {
+        deliveredBuffer = originalCreateData();
+        return deliveredBuffer;
+      });
+      let descriptorOutput: { fd: number; digest: string } | undefined;
+      useSdkMessages([SUCCESS_RESULT], async (options) => {
+        const spawnProcess = options.spawnClaudeCodeProcess as
+          | ((input: ClaudeAgentSdkSpawnOptions) => ClaudeAgentSdkSpawnedProcess)
+          | undefined;
+        if (!spawnProcess) {
+          throw new Error("Selected Claude credentials require an SDK-private descriptor spawner.");
+        }
+        const args = [
+          "-e",
+          [
+            `const data = require("node:fs").readFileSync(${JSON.stringify(process.platform === "win32" ? 3 : process.platform === "darwin" ? "/dev/fd/3" : "/proc/self/fd/3")});`,
+            'if (require("node:fs").readFileSync(3).length !== 0) throw new Error("credential replayed");',
+            'require("node:fs").writeSync(2, Buffer.alloc(1024 * 1024));',
+            'const digest = require("node:crypto").createHash("sha256").update(data).digest("hex");',
+            'const descendant = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {stdio: "ignore"});',
+            `process.stdout.write(JSON.stringify({fd: Number(process.env[${JSON.stringify(descriptorEnv)}]), digest, descendantPid: descendant.pid}));`,
+            "data.fill(0);",
+            "setInterval(() => {}, 1000);",
+          ].join(""),
+        ];
+        const env = { PATH: process.env.PATH, ...prepared.env };
+        expect(JSON.stringify(args)).not.toContain(token);
+        expect(Object.values(env)).not.toContain(token);
+        const child = spawnProcess({
+          command: process.execPath,
+          args,
+          cwd: process.cwd(),
+          env,
+          signal: new AbortController().signal,
+        });
+        const output = await new Promise<string>((resolve, reject) => {
+          let stdout = "";
+          child.stdout.on("data", (chunk: Buffer | string) => {
+            stdout += chunk.toString();
+            child.kill("SIGTERM");
+          });
+          child.once("error", reject);
+          child.once("exit", (code, signal) => {
+            if (signal === "SIGTERM" || (process.platform === "win32" && code !== null)) {
+              resolve(stdout);
+            } else {
+              reject(new Error(`Credential descriptor proof exited ${String(code)}.`));
+            }
+          });
+        });
+        const { descendantPid, ...descriptor } = JSON.parse(output) as {
+          fd: number;
+          digest: string;
+          descendantPid: number;
+        };
+        descriptorOutput = descriptor;
         try {
-          process.kill(descendantPid, "SIGKILL");
-        } catch {}
+          await vi.waitFor(() => expect(() => process.kill(descendantPid, 0)).toThrow());
+        } finally {
+          try {
+            process.kill(descendantPid, "SIGKILL");
+          } catch {}
+        }
+      });
+
+      const events: Record<string, unknown>[] = [];
+      for await (const event of prepared.execute(
+        createContext({ env: { ...createContext().env, ...prepared.env } }),
+      )) {
+        events.push(event);
       }
-    });
 
-    const events: Record<string, unknown>[] = [];
-    for await (const event of prepared.execute(
-      createContext({ env: { ...createContext().env, ...prepared.env } }),
-    )) {
-      events.push(event);
-    }
-
-    expect(events).toContainEqual(SUCCESS_RESULT);
-    expect(descriptorOutput).toEqual({
-      fd: 3,
-      digest: createHash("sha256").update(token).digest("hex"),
-    });
-    expect(deliveredBuffer).toBeDefined();
-    expect(deliveredBuffer?.every((byte) => byte === 0)).toBe(true);
-    await prepared.cleanup?.();
-    expect(() => prepared.secretInput.createData()).toThrow("no longer available");
-  });
+      expect(events).toContainEqual(SUCCESS_RESULT);
+      expect(descriptorOutput).toEqual({
+        fd: 3,
+        digest: createHash("sha256").update(token).digest("hex"),
+      });
+      expect(deliveredBuffer).toBeDefined();
+      expect(deliveredBuffer?.every((byte) => byte === 0)).toBe(true);
+      await prepared.cleanup?.();
+      expect(() => prepared.secretInput.createData()).toThrow("no longer available");
+    },
+  );
 
   it.each(
     [

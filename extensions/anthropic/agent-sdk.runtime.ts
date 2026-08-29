@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { PassThrough, Writable } from "node:stream";
+import { PassThrough } from "node:stream";
 import type {
   Options as ClaudeAgentSdkOptions,
   PermissionResult as ClaudeAgentSdkPermissionResult,
@@ -14,7 +14,11 @@ import type {
   CliBackendLiveSessionCloseReason,
   CliBackendLiveSessionHandle,
 } from "openclaw/plugin-sdk/cli-backend";
-import { killProcessTree } from "openclaw/plugin-sdk/process-runtime";
+import {
+  killProcessTree,
+  prepareSecretInputStdio,
+  type SpawnStdioEntry,
+} from "openclaw/plugin-sdk/process-runtime";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   createClaudeAgentSdkUserMessage,
@@ -108,14 +112,14 @@ function spawnClaudeAgentSdkProcess(
   options: ClaudeAgentSdkSpawnOptions,
   secretInput?: ClaudeAgentSdkSecretInput,
 ): ClaudeAgentSdkSpawnedProcess {
+  const stdio: ["pipe", "pipe", "pipe", ...SpawnStdioEntry[]] = ["pipe", "pipe", "pipe"];
+  using secretDelivery = prepareSecretInputStdio(stdio, secretInput);
   const child = spawn(options.command, options.args, {
     cwd: options.cwd,
     detached: process.platform !== "win32",
     env: options.env,
     signal: options.signal,
-    stdio: secretInput
-      ? ["pipe", "pipe", "pipe", process.platform === "win32" ? "overlapped" : "pipe"]
-      : ["pipe", "pipe", "pipe"],
+    stdio,
     windowsHide: true,
   });
   // The SDK only drains stderr for its built-in spawner; unread custom pipes
@@ -134,34 +138,8 @@ function spawnClaudeAgentSdkProcess(
     });
     return true;
   };
-  if (!secretInput) {
-    return child;
-  }
-  let credential: Buffer | undefined;
-  try {
-    const descriptor = child.stdio[secretInput.fd];
-    if (!(descriptor instanceof Writable)) {
-      throw new Error(`Claude Agent SDK secret descriptor ${secretInput.fd} is unavailable.`);
-    }
-    credential = secretInput.createData();
-    const rejectDelivery = () => {
-      credential?.fill(0);
-      child.kill();
-    };
-    descriptor.on("error", rejectDelivery);
-    descriptor.once("close", () => descriptor.off("error", rejectDelivery));
-    descriptor.end(credential, (error?: Error | null) => {
-      credential?.fill(0);
-      if (error) {
-        child.kill();
-      }
-    });
-    return child;
-  } catch (error) {
-    credential?.fill(0);
-    child.kill();
-    throw error;
-  }
+  void secretDelivery?.deliverTo(child).catch(() => child.kill());
+  return child;
 }
 
 async function authorizeClaudeAgentSdkTool(params: {

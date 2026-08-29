@@ -412,6 +412,7 @@ describe("createChildAdapter", () => {
   );
 
   it("preserves startup failure when a worker error arrives during secret delivery", async () => {
+    setPlatform("win32");
     const { child, killMock } = createStubChild();
     const deliveryError = new Error("secret delivery failed");
     const secretStream = new Writable({
@@ -444,6 +445,7 @@ describe("createChildAdapter", () => {
   });
 
   it("writes secret input to an extra descriptor and zeroes the transient buffer", async () => {
+    setPlatform("win32");
     const { child } = createStubChild();
     const secretStream = new PassThrough();
     const chunks: Buffer[] = [];
@@ -480,6 +482,7 @@ describe("createChildAdapter", () => {
   });
 
   it("captures child close while secret input delivery is still pending", async () => {
+    setPlatform("win32");
     const { child, emitClose } = createStubChild();
     const secretStream = new Writable({
       write(_chunk, _encoding, callback) {
