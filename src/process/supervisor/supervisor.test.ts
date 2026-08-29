@@ -27,6 +27,46 @@ vi.mock("./adapters/pty.js", () => ({
 
 let createProcessSupervisor: typeof import("./supervisor.js").createProcessSupervisor;
 
+type OutputListenerKind = {
+  name: string;
+  stream: "stdout" | "stderr";
+  spawnOptions: (record: (chunk: string) => void) => Partial<Parameters<typeof spawnChild>[1]>;
+};
+
+// One stream chunk reaches four supervisor-owned output paths. All four, plus the
+// captured buffer and the run's output clock, close together on terminal
+// settlement and on an explicit owner detach.
+const OUTPUT_LISTENER_KINDS: OutputListenerKind[] = [
+  {
+    name: "decoded stdout",
+    stream: "stdout",
+    spawnOptions: (record) => ({ onStdout: record }),
+  },
+  {
+    name: "decoded stderr",
+    stream: "stderr",
+    spawnOptions: (record) => ({ onStderr: record }),
+  },
+  {
+    name: "raw stdout",
+    stream: "stdout",
+    spawnOptions: (record) => ({ onStdoutRaw: (raw) => record(raw.toString("utf8")) }),
+  },
+  {
+    name: "raw stderr",
+    stream: "stderr",
+    spawnOptions: (record) => ({ onStderrRaw: (raw) => record(raw.toString("utf8")) }),
+  },
+];
+
+function emitOutputChunk(adapter: StubChildAdapter, stream: "stdout" | "stderr", chunk: string) {
+  if (stream === "stdout") {
+    adapter.emitStdout(chunk);
+    return;
+  }
+  adapter.emitStderr(chunk);
+}
+
 describe("process supervisor", () => {
   beforeEach(async () => {
     vi.resetModules();
@@ -943,6 +983,70 @@ describe("process supervisor", () => {
     expect(streamed).toBe("streamed");
     expect(exit.stdout).toBe("");
   });
+
+  it.each(OUTPUT_LISTENER_KINDS)(
+    "stops $name, capture, and the output clock once the run result settles",
+    async ({ stream, spawnOptions }) => {
+      const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_000);
+      const adapter = createStubChildAdapter();
+      createChildAdapterMock.mockResolvedValue(adapter);
+
+      const supervisor = createProcessSupervisor();
+      const delivered: string[] = [];
+      const run = await spawnChild(supervisor, {
+        sessionId: "s-late-output",
+        argv: createSilentIdleArgv(),
+        timeoutMs: 1_000,
+        stdinMode: "pipe-closed",
+        ...spawnOptions((chunk) => delivered.push(chunk)),
+      });
+
+      nowSpy.mockReturnValue(2_000);
+      emitOutputChunk(adapter, stream, "live");
+      // The forced kill-wait fallback settles the result while the child's
+      // inherited pipes stay open. Callers finalize their own output state from
+      // that terminal result, so a late chunk must reach nothing at all.
+      adapter.settle(null, "SIGKILL");
+      const exit = await run.wait();
+      nowSpy.mockReturnValue(3_000);
+      emitOutputChunk(adapter, stream, "late");
+
+      expect(delivered).toEqual(["live"]);
+      expect(exit[stream]).toBe("live");
+      expect(supervisor.getRecord(run.runId)?.lastOutputAtMs).toBe(2_000);
+    },
+  );
+
+  it.each(OUTPUT_LISTENER_KINDS)(
+    "stops $name, capture, and the output clock when the owner detaches output",
+    async ({ stream, spawnOptions }) => {
+      const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_000);
+      const adapter = createStubChildAdapter();
+      createChildAdapterMock.mockResolvedValue(adapter);
+
+      const supervisor = createProcessSupervisor();
+      const delivered: string[] = [];
+      const run = await spawnChild(supervisor, {
+        sessionId: "s-detach-output",
+        argv: createSilentIdleArgv(),
+        timeoutMs: 1_000,
+        stdinMode: "pipe-closed",
+        ...spawnOptions((chunk) => delivered.push(chunk)),
+      });
+
+      nowSpy.mockReturnValue(2_000);
+      emitOutputChunk(adapter, stream, "attached");
+      run.detachOutput?.();
+      nowSpy.mockReturnValue(3_000);
+      emitOutputChunk(adapter, stream, "detached");
+      adapter.settle(0);
+      const exit = await run.wait();
+
+      expect(delivered).toEqual(["attached"]);
+      expect(exit[stream]).toBe("attached");
+      expect(supervisor.getRecord(run.runId)?.lastOutputAtMs).toBe(2_000);
+    },
+  );
 
   it("bounds retained output on UTF-16 boundaries while streaming full chunks", async () => {
     const adapter = createStubChildAdapter();

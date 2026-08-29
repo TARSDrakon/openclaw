@@ -223,8 +223,14 @@ export function createProcessSupervisor(): ProcessSupervisor & {
     let ownershipExtinct = false;
     let stdout = "";
     let stderr = "";
-    let stdoutListener = input.onStdout;
-    let stderrListener = input.onStderr;
+    // Forced settlement (kill-wait fallback, Windows forced close) resolves the
+    // result while inherited pipes stay open, and callers finalize their own
+    // output state from that terminal result. One fence closes every output path
+    // together: a late chunk reaches no listener, capture buffer, or output clock.
+    let outputDetached = false;
+    const detachOutput = () => {
+      outputDetached = true;
+    };
     let timeoutTimer: NodeJS.Timeout | null = null;
     let noOutputTimer: NodeJS.Timeout | null = null;
     let forceKillTimer: NodeJS.Timeout | null = null;
@@ -367,6 +373,7 @@ export function createProcessSupervisor(): ProcessSupervisor & {
       const settleResult = () => {
         resultSettled = true;
         clearResultTimers();
+        detachOutput();
         if (ownershipExtinct) {
           adapter.dispose();
         } else if (!adapter.waitForExtinction) {
@@ -425,27 +432,33 @@ export function createProcessSupervisor(): ProcessSupervisor & {
         );
       }
 
-      const onRawOutput = (listener?: (chunk: Buffer) => void) =>
-        listener &&
-        ((chunk: Buffer) => {
-          listener(chunk);
-          touchOutput();
-        });
+      const withOutputFence =
+        <Chunk>(deliver: (chunk: Chunk) => void) =>
+        (chunk: Chunk) => {
+          if (!outputDetached) {
+            deliver(chunk);
+            touchOutput();
+          }
+        };
       const rawInput = input.mode === "child" ? input : undefined;
-      adapter.onStdout((chunk) => {
-        if (captureOutput) {
-          stdout = appendCapturedOutput(stdout, chunk, "stdout", maxCapturedOutputChars);
-        }
-        stdoutListener?.(chunk);
-        touchOutput();
-      }, onRawOutput(rawInput?.onStdoutRaw));
-      adapter.onStderr((chunk) => {
-        if (captureOutput) {
-          stderr = appendCapturedOutput(stderr, chunk, "stderr", maxCapturedOutputChars);
-        }
-        stderrListener?.(chunk);
-        touchOutput();
-      }, onRawOutput(rawInput?.onStderrRaw));
+      adapter.onStdout(
+        withOutputFence((chunk: string) => {
+          if (captureOutput) {
+            stdout = appendCapturedOutput(stdout, chunk, "stdout", maxCapturedOutputChars);
+          }
+          input.onStdout?.(chunk);
+        }),
+        rawInput?.onStdoutRaw && withOutputFence(rawInput.onStdoutRaw),
+      );
+      adapter.onStderr(
+        withOutputFence((chunk: string) => {
+          if (captureOutput) {
+            stderr = appendCapturedOutput(stderr, chunk, "stderr", maxCapturedOutputChars);
+          }
+          input.onStderr?.(chunk);
+        }),
+        rawInput?.onStderrRaw && withOutputFence(rawInput.onStderrRaw),
+      );
 
       const waitPromise = (async (): Promise<RunExit> => {
         const result = await adapter.wait();
@@ -505,10 +518,7 @@ export function createProcessSupervisor(): ProcessSupervisor & {
         cancel: (reason = "manual-cancel") => {
           requestCancel(reason);
         },
-        detachOutput: () => {
-          stdoutListener = undefined;
-          stderrListener = undefined;
-        },
+        detachOutput,
       };
 
       active.set(runId, {

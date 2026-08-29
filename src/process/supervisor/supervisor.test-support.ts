@@ -3,6 +3,11 @@ import type { ProcessSupervisor, SpawnInput, SpawnProcessAdapter } from "./types
 
 type ChildSpawnOptions = Omit<Extract<SpawnInput, { mode: "child" }>, "backendId" | "mode">;
 
+type StubOutputSubscriber = {
+  listener: (chunk: string) => void;
+  onRaw?: (chunk: Buffer) => void;
+};
+
 export type StubChildAdapter = SpawnProcessAdapter<NodeJS.Signals | null> & {
   emitStdout: (chunk: string) => void;
   emitStderr: (chunk: string) => void;
@@ -26,8 +31,16 @@ export function createStubChildAdapter(options?: {
   pid?: number;
   onKill?: (signal: NodeJS.Signals | undefined, adapter: StubChildAdapter) => void;
 }): StubChildAdapter {
-  const stdoutListeners: Array<(chunk: string) => void> = [];
-  const stderrListeners: Array<(chunk: string) => void> = [];
+  const stdoutSubscribers: StubOutputSubscriber[] = [];
+  const stderrSubscribers: StubOutputSubscriber[] = [];
+  // Mirror onDecodedOutput: one stream chunk reaches the raw subscriber before
+  // its decoded sibling, so a single emit exercises both supervisor paths.
+  const emitOutput = (subscribers: StubOutputSubscriber[], chunk: string) => {
+    for (const subscriber of subscribers) {
+      subscriber.onRaw?.(Buffer.from(chunk));
+      subscriber.listener(chunk);
+    }
+  };
   let resolveWait:
     | ((value: { code: number | null; signal: NodeJS.Signals | null }) => void)
     | null = null;
@@ -41,11 +54,11 @@ export function createStubChildAdapter(options?: {
   const adapter: StubChildAdapter = {
     pid: options?.pid ?? 1234,
     stdin: undefined,
-    onStdout: (listener) => {
-      stdoutListeners.push(listener);
+    onStdout: (listener, onRaw) => {
+      stdoutSubscribers.push({ listener, ...(onRaw ? { onRaw } : {}) });
     },
-    onStderr: (listener) => {
-      stderrListeners.push(listener);
+    onStderr: (listener, onRaw) => {
+      stderrSubscribers.push({ listener, ...(onRaw ? { onRaw } : {}) });
     },
     wait: async () => await waitPromise,
     kill: (signal) => {
@@ -56,14 +69,10 @@ export function createStubChildAdapter(options?: {
       disposeMock();
     },
     emitStdout: (chunk) => {
-      for (const listener of stdoutListeners) {
-        listener(chunk);
-      }
+      emitOutput(stdoutSubscribers, chunk);
     },
     emitStderr: (chunk) => {
-      for (const listener of stderrListeners) {
-        listener(chunk);
-      }
+      emitOutput(stderrSubscribers, chunk);
     },
     settle: (code, signal = null) => {
       resolveWait?.({ code, signal });
