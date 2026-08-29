@@ -607,7 +607,7 @@ export const manyAgents = (count: number) =>
   }) as AgentsListResult;
 
 export const catalogPage = (
-  sessions: Array<{ threadId: string; name: string; sessionKey?: string }>,
+  sessions: Array<{ threadId: string; name: string; sessionKey?: string; color?: string }>,
   nextCursor?: string,
   catalogId = "codex",
 ): SessionsCatalogListResult => ({

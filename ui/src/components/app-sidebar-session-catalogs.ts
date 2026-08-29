@@ -60,6 +60,8 @@ export function findCatalogSessionHovercardRow(params: {
         return {
           ...params.liveRow,
           label: session.name || session.threadId,
+          // Once adopted, even an unset live color overrides stale catalog metadata.
+          color: params.liveRow ? params.liveRow.color : session.color,
           createdActor: params.liveRow?.createdActor ?? session.createdActor,
           createdAt: params.liveRow?.createdAt ?? normalizeCatalogTimestamp(session.createdAt),
           updatedAt: params.liveRow?.updatedAt ?? normalizeCatalogTimestamp(session.updatedAt),

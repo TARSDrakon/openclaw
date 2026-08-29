@@ -1434,6 +1434,7 @@ class SessionsPage extends OpenClawLightDomElement {
           archived: row.archived === true,
           category: normalizeOptionalString(row.category) ?? null,
           icon: normalizeOptionalString(row.icon) ?? null,
+          color: normalizeOptionalString(row.color) ?? null,
           categoryClearReturnsToGroups: false,
         }}
         .anchor=${menu}
@@ -1479,6 +1480,9 @@ class SessionsPage extends OpenClawLightDomElement {
               break;
             case "rename":
               void this.renameSession(row);
+              break;
+            case "set-color":
+              void this.patchSession(row.key, { color: action.color });
               break;
             case "set-icon":
               void this.patchSession(row.key, { icon: action.icon });
