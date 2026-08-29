@@ -13,6 +13,7 @@ let createPipe: (() => SecretPipe) | undefined;
 
 function createSecretPipe(): SecretPipe {
   createPipe ??= (() => {
+    // SAFETY: Koffi's require export has the same API as its typed default export.
     const koffi = require("koffi") as typeof import("koffi").default;
     const libc = koffi.load(null);
     const closeFd = libc.func("int close(int fd)");
@@ -98,7 +99,7 @@ export function prepareSecretInputStdio(
                     pipe!.close(fd);
                     callback(null);
                   } catch (error) {
-                    callback(toErrorObject(error));
+                    callback(toErrorObject(error, "secret input close failed"));
                   }
                 },
               },

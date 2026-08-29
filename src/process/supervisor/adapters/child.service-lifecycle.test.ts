@@ -510,10 +510,10 @@ describe.skipIf(process.platform === "win32")("service-managed child lifecycle",
     }
   });
 
-  it.each([false, true])(
-    "keeps reopenable secret input distinct from stdin and lifecycle channels (service=%s)",
-    async (service) => {
-      if (service) {
+  it.each(["direct", "service", "owned-worker"] as const)(
+    "keeps reopenable secret input distinct from stdin and lifecycle channels (%s)",
+    async (mode) => {
+      if (mode === "service") {
         process.env.OPENCLAW_SERVICE_MARKER = "openclaw";
       }
       const adapter = await createChildAdapter({
@@ -525,6 +525,7 @@ describe.skipIf(process.platform === "win32")("service-managed child lifecycle",
          const input = fs.readFileSync(0, "utf8");
          process.stdout.write(secret.length + ":" + input);`,
         ],
+        ownedWorker: mode === "owned-worker" ? true : undefined,
         stdinMode: "pipe-open",
         secretInput: {
           fd: 3,
@@ -535,6 +536,7 @@ describe.skipIf(process.platform === "win32")("service-managed child lifecycle",
       adapter.onStdout((chunk) => {
         output += chunk;
       });
+      adapter.closeStartGate?.();
       adapter.stdin?.write("ordinary-input\n");
       adapter.stdin?.end();
 

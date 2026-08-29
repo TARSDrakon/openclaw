@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { PassThrough } from "node:stream";
 import type {
@@ -121,7 +121,7 @@ function spawnClaudeAgentSdkProcess(
     signal: options.signal,
     stdio,
     windowsHide: true,
-  });
+  }) as ChildProcessWithoutNullStreams; // SAFETY: stdio[0..2] are pipes.
   // The SDK only drains stderr for its built-in spawner; unread custom pipes
   // fill at 64 KiB and deadlock credential-backed Claude processes.
   child.stderr.resume();
