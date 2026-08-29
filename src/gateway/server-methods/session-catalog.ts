@@ -440,7 +440,7 @@ export const sessionCatalogHandlers: GatewayRequestHandlers = {
             : undefined;
           const onHost = (host: SessionCatalog["hosts"][number]) => {
             const visibleHost = filterSessionCatalogHost(
-              requestEntries.projectHostCreatedActors(host),
+              requestEntries.projectHostSessions(host),
               visibility,
               {
                 config,
@@ -479,15 +479,11 @@ export const sessionCatalogHandlers: GatewayRequestHandlers = {
             return catalogResult(
               provider,
               hosts.map((host) =>
-                filterSessionCatalogHost(
-                  requestEntries.projectHostCreatedActors(host),
-                  visibility,
-                  {
-                    config,
-                    fallbackAgentId: resolvedAgent.agentId,
-                    sessionEntries: requestEntries.sessionEntries,
-                  },
-                ),
+                filterSessionCatalogHost(requestEntries.projectHostSessions(host), visibility, {
+                  config,
+                  fallbackAgentId: resolvedAgent.agentId,
+                  sessionEntries: requestEntries.sessionEntries,
+                }),
               ),
               undefined,
               createSession,

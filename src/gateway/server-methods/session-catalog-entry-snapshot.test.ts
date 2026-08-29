@@ -85,6 +85,37 @@ describe("session catalog entry snapshots", () => {
     hoisted.listSessionEntriesReadOnly.mockReset();
   });
 
+  it.each([
+    [" BLUE ", "blue"],
+    ["default", undefined],
+    ["reset", undefined],
+    ["none", undefined],
+    ["gray", undefined],
+    ["grey", undefined],
+    ["#ff0000", undefined],
+    ["invalid", undefined],
+    [undefined, undefined],
+  ])("projects provider color %s to its canonical wire value", (color, expected) => {
+    const snapshot = createSessionCatalogRequestEntrySnapshot({ cfg: {}, fallbackAgentId: "main" });
+    const host = snapshot.projectHostSessions({
+      hostId: "gateway:fixture",
+      label: "Fixture",
+      kind: "gateway",
+      connected: true,
+      sessions: [
+        {
+          threadId: "color-fixture",
+          color,
+          status: "stored",
+          archived: false,
+          canContinue: true,
+          canArchive: false,
+        },
+      ],
+    });
+    expect(host.sessions[0]?.color).toBe(expected);
+  });
+
   it("shares resolved and missing human profiles across hosts without retaining them across requests", () => {
     let label = "Before rename";
     const display = vi.spyOn(userProfiles, "getUserProfileDisplay").mockImplementation((id) => {
@@ -124,7 +155,7 @@ describe("session catalog entry snapshots", () => {
         fallbackAgentId: "main",
       });
       return hosts.map((host) =>
-        snapshot.projectHostCreatedActors(host).sessions.map((session) => session.createdActor),
+        snapshot.projectHostSessions(host).sessions.map((session) => session.createdActor),
       );
     };
     const expectedActors = () => [
@@ -278,7 +309,7 @@ describe("session catalog entry snapshots", () => {
     ];
     hoisted.listSessionEntriesReadOnly.mockReturnValue(entries);
     const snapshot = createSessionCatalogRequestEntrySnapshot({ cfg: {}, fallbackAgentId: "main" });
-    const projected = snapshot.projectHostCreatedActors({
+    const projected = snapshot.projectHostSessions({
       hostId: "gateway:fixture",
       label: "Fixture",
       kind: "gateway",

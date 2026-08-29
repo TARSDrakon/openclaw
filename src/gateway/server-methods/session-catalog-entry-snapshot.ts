@@ -1,6 +1,7 @@
-import type {
-  SessionCatalogHost,
-  SessionCatalogSession,
+import {
+  normalizeSessionColorValue,
+  type SessionCatalogHost,
+  type SessionCatalogSession,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { listAgentIds } from "../../agents/agent-scope.js";
 import type { SessionEntry } from "../../config/sessions.js";
@@ -21,7 +22,7 @@ import type { SessionActorProfileIdentity } from "../session-utils-contracts.js"
 
 type SessionCatalogRequestEntrySnapshot = {
   sessionEntries: SessionCatalogEntrySnapshot;
-  projectHostCreatedActors: (host: SessionCatalogHost) => SessionCatalogHost;
+  projectHostSessions: (host: SessionCatalogHost) => SessionCatalogHost;
 };
 
 export function createSessionCatalogRequestEntrySnapshot(params: {
@@ -110,14 +111,21 @@ export function createSessionCatalogRequestEntrySnapshot(params: {
 
   return {
     sessionEntries: { entriesForAgent, entriesForCatalog },
-    projectHostCreatedActors: (host) => ({
+    projectHostSessions: (host) => ({
       ...host,
-      sessions: host.sessions.map(({ createdActor: _providerCreatedActor, ...session }) => {
-        const createdActor = session.sessionKey
-          ? createdActorForSession(session.sessionKey)
-          : undefined;
-        return createdActor ? { ...session, createdActor } : session;
-      }),
+      sessions: host.sessions.map(
+        ({ createdActor: _providerCreatedActor, color: rawColor, ...session }) => {
+          const createdActor = session.sessionKey
+            ? createdActorForSession(session.sessionKey)
+            : undefined;
+          const color = typeof rawColor === "string" ? normalizeSessionColorValue(rawColor) : null;
+          return {
+            ...session,
+            ...(createdActor ? { createdActor } : {}),
+            ...(color ? { color } : {}),
+          };
+        },
+      ),
     }),
   };
 }
