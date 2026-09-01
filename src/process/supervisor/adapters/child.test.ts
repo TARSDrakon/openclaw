@@ -17,6 +17,9 @@ import {
   mockLinuxOomWrapperShell,
 } from "./test-support.js";
 
+type CreateWindowsOutputDecoder =
+  typeof import("../../../infra/windows-encoding.js").createWindowsOutputDecoder;
+
 const {
   spawnWithFallbackMock,
   signalProcessTreeMock,
@@ -29,7 +32,7 @@ const {
       opts?.onComplete?.();
     },
   ),
-  createWindowsOutputDecoderMock: vi.fn(() => ({
+  createWindowsOutputDecoderMock: vi.fn<CreateWindowsOutputDecoder>(() => ({
     decode: (chunk: Buffer | string) => (Buffer.isBuffer(chunk) ? chunk.toString("utf8") : chunk),
     flush: () => "",
   })),
