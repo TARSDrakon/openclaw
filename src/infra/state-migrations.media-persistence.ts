@@ -356,6 +356,12 @@ function createMigrationDatabaseHandle(
   };
 }
 
+function refreshAgentDatabasePlannerStatistics(database: DatabaseSync): void {
+  // Doctor owns a stopped-writer maintenance window here. Explicitly analyze every
+  // table because the supported pre-3.46 SQLite floor lacks optimize's all-table bit.
+  database.exec("PRAGMA analysis_limit=1000; ANALYZE main;");
+}
+
 function migrateAgentDatabase(params: {
   agentId: string;
   beforeTransaction?: () => void;
@@ -381,23 +387,14 @@ function migrateAgentDatabase(params: {
       });
       userVersion = readSqliteUserVersion(database);
     }
-    if (
-      userVersion !== PREVIOUS_MEDIA_SCHEMA_VERSION &&
-      userVersion !== AGENT_MEDIA_SCHEMA_VERSION &&
-      userVersion !== OPENCLAW_AGENT_SCHEMA_VERSION
-    ) {
-      throw new Error(
-        `${params.pathname} uses schema version ${userVersion}; expected ${PREVIOUS_MEDIA_SCHEMA_VERSION} or ${OPENCLAW_AGENT_SCHEMA_VERSION}`,
-      );
-    }
     if (metadata.schemaVersion !== userVersion) {
       throw new Error(
         `${params.pathname} metadata schema version ${metadata.schemaVersion ?? "invalid"} does not match ${userVersion}`,
       );
     }
     if (userVersion >= AGENT_MEDIA_SCHEMA_VERSION) {
-      // Doctor can encounter a current-version database before newly additive schema exists.
-      // Converge it through the canonical agent-schema owner before media validation.
+      // The canonical owner admits supported versions and converges additive schema;
+      // media must not enumerate later schema revisions independently.
       ensureOpenClawAgentDatabaseSchema(database, {
         agentId: params.agentId,
         path: params.pathname,
@@ -432,6 +429,7 @@ function migrateAgentDatabase(params: {
         { databaseLabel: params.pathname, operationLabel: "media-persistence-detection" },
       );
       if (detected.rewrittenSessions === 0 && detected.rewrittenTrajectoryRows === 0) {
+        refreshAgentDatabasePlannerStatistics(database);
         return { ...detected, initialVersion, finalVersion: userVersion };
       }
     }
@@ -482,6 +480,7 @@ function migrateAgentDatabase(params: {
       },
     );
     ensureOpenClawAgentDatabaseSchema(database, { agentId: params.agentId, path: params.pathname });
+    refreshAgentDatabasePlannerStatistics(database);
     return {
       ...rewritten,
       initialVersion,
