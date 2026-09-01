@@ -10,6 +10,7 @@ type StubOutputSubscriber = {
 
 export type StubChildAdapter = SpawnProcessAdapter<NodeJS.Signals | null> & {
   emitStdout: (chunk: string) => void;
+  emitStdoutRaw: (chunk: Buffer) => void;
   emitStderr: (chunk: string) => void;
   settle: (code: number | null, signal?: NodeJS.Signals | null) => void;
   killMock: ReturnType<typeof vi.fn>;
@@ -70,6 +71,11 @@ export function createStubChildAdapter(options?: {
     },
     emitStdout: (chunk) => {
       emitOutput(stdoutSubscribers, chunk);
+    },
+    emitStdoutRaw: (chunk) => {
+      for (const subscriber of stdoutSubscribers) {
+        subscriber.onRaw?.(chunk);
+      }
     },
     emitStderr: (chunk) => {
       emitOutput(stderrSubscribers, chunk);

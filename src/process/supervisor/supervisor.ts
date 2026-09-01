@@ -436,12 +436,15 @@ export function createProcessSupervisor(): ProcessSupervisor & {
       }
 
       const withOutputFence =
-        <Chunk>(deliver: (chunk: Chunk) => void) =>
+        <Chunk>(deliver: (chunk: Chunk) => void, recordsOutput = true) =>
         (chunk: Chunk) => {
-          if (!outputDetached) {
-            deliver(chunk);
+          if (outputDetached) {
+            return;
+          }
+          if (recordsOutput) {
             touchOutput();
           }
+          deliver(chunk);
         };
       const rawInput = input.mode === "child" ? input : undefined;
       adapter.onStdout(
@@ -450,7 +453,7 @@ export function createProcessSupervisor(): ProcessSupervisor & {
             stdout = appendCapturedOutput(stdout, chunk, "stdout", maxCapturedOutputChars);
           }
           input.onStdout?.(chunk);
-        }),
+        }, !rawInput?.onStdoutRaw),
         rawInput?.onStdoutRaw && withOutputFence(rawInput.onStdoutRaw),
       );
       adapter.onStderr(
@@ -459,7 +462,7 @@ export function createProcessSupervisor(): ProcessSupervisor & {
             stderr = appendCapturedOutput(stderr, chunk, "stderr", maxCapturedOutputChars);
           }
           input.onStderr?.(chunk);
-        }),
+        }, !rawInput?.onStderrRaw),
         rawInput?.onStderrRaw && withOutputFence(rawInput.onStderrRaw),
       );
 

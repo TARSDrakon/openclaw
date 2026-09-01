@@ -137,6 +137,43 @@ describe("process supervisor", () => {
     expect(exit.timedOut).toBe(true);
   });
 
+  it("refreshes the no-output deadline before delivering a raw-only UTF-8 chunk", async () => {
+    vi.useFakeTimers();
+    const adapter = createStubChildAdapter({
+      onKill: (signal, current) => {
+        current.settle(null, signal ?? "SIGKILL");
+      },
+    });
+    createChildAdapterMock.mockResolvedValue(adapter);
+
+    const supervisor = createProcessSupervisor();
+    const runId = "raw-output-deadline";
+    let callbackOutputAtMs: number | undefined;
+    const run = await spawnChild(supervisor, {
+      runId,
+      sessionId: "s-raw-output-deadline",
+      argv: createSilentIdleArgv(),
+      noOutputTimeoutMs: 10,
+      onStdoutRaw: () => {
+        callbackOutputAtMs = supervisor.getRecord(runId)?.lastOutputAtMs;
+      },
+    });
+    const startedAtMs = supervisor.getRecord(runId)?.startedAtMs;
+
+    await vi.advanceTimersByTimeAsync(9);
+    adapter.emitStdoutRaw(Buffer.from([0xe2]));
+
+    expect(callbackOutputAtMs).toBeGreaterThan(startedAtMs ?? Number.POSITIVE_INFINITY);
+    await vi.advanceTimersByTimeAsync(9);
+    expect(adapter.killMock).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(run.wait()).resolves.toMatchObject({
+      reason: "no-output-timeout",
+      noOutputTimedOut: true,
+    });
+  });
+
   it("coalesces overlapping Windows deadline cancellation while hard kill is pending", async () => {
     vi.useFakeTimers();
     mockProcessPlatform("win32");
@@ -1055,6 +1092,8 @@ describe("process supervisor", () => {
     async ({ stream, spawnOptions }) => {
       const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_000);
       const adapter = createStubChildAdapter();
+      const extinction = createDeferred();
+      adapter.waitForExtinction = () => extinction.promise;
       createChildAdapterMock.mockResolvedValue(adapter);
 
       const supervisor = createProcessSupervisor();
@@ -1074,12 +1113,16 @@ describe("process supervisor", () => {
       // that terminal result, so a late chunk must reach nothing at all.
       adapter.settle(null, "SIGKILL");
       const exit = await run.wait();
+      expect(adapter.disposeMock).not.toHaveBeenCalled();
       nowSpy.mockReturnValue(3_000);
       emitOutputChunk(adapter, stream, "late");
 
       expect(delivered).toEqual(["live"]);
       expect(exit[stream]).toBe("live");
       expect(supervisor.getRecord(run.runId)?.lastOutputAtMs).toBe(2_000);
+      extinction.resolve();
+      await expect(run.waitForExtinction?.()).resolves.toBeUndefined();
+      expect(adapter.disposeMock).toHaveBeenCalledOnce();
     },
   );
 

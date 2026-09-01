@@ -1,34 +1,41 @@
-// Real-process proof for the supervisor's terminal output fence: a leaked
-// descendant keeps the killed root's inherited pipes open, so the child
-// adapter's force-kill wait fallback settles the run while stdout/stderr are
-// still delivering. Callers finalize their own output state from that terminal
-// result — src/agents/cli-runner/execute-process.ts digests its SHA-256 stdout
-// and stderr diagnostics right after `managedRun.wait()` — so any late chunk
-// reaching a listener crashes the gateway with ERR_CRYPTO_HASH_FINALIZED.
+// A detached descendant can retain stdio after forced settlement. Callers
+// finalize output hashes after wait(), so no later output may reach them.
 import crypto from "node:crypto";
 import { statSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { waitForDead, waitForPidFile } from "../../../test/helpers/process-wait.js";
-import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { killPidIfAlive } from "../../test-utils/process-tree.js";
 import { createProcessSupervisor } from "./supervisor.js";
 
-// SIGTERM plus the adapter's kill-wait fallback is a fixed ~9s production
-// window; the gateway journal recorded the same 9.3-9.7s settle delay.
+// SIGTERM plus the adapter's kill-wait fallback is a fixed ~9s production window.
 const FORCED_SETTLEMENT_TEST_TIMEOUT_MS = 60_000;
 const LATE_OUTPUT_OBSERVATION_MS = 500;
+const CLEANUP_PID_RESOLVE_MS = 250;
 
 const activePids = new Set<number>();
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const activePidFiles = new Set<string>();
+const tempDirs = createTempDirTracker();
 
 afterEach(async () => {
-  for (const pid of activePids) {
-    killPidIfAlive(pid);
+  try {
+    for (const pidFile of activePidFiles) {
+      const pid = await waitForPidFile(pidFile, CLEANUP_PID_RESOLVE_MS).catch(() => undefined);
+      if (pid !== undefined) {
+        activePids.add(pid);
+      }
+    }
+    for (const pid of activePids) {
+      killPidIfAlive(pid);
+    }
+    await Promise.all([...activePids].map((pid) => waitForDead(pid, 5_000).catch(() => {})));
+  } finally {
+    activePidFiles.clear();
+    activePids.clear();
+    tempDirs.cleanup();
   }
-  await Promise.all([...activePids].map((pid) => waitForDead(pid, 5_000).catch(() => {})));
-  activePids.clear();
 });
 
 async function createLeakedPipeScope() {
@@ -41,14 +48,16 @@ async function createLeakedPipeScope() {
     leakPath,
     `
       const { appendFileSync, writeFileSync } = require("node:fs");
+      // Adapter disposal closes the parent-side pipes. Keep the escaped process
+      // alive so its independent tick file proves output attempts continue.
+      process.stdout.on("error", () => {});
+      process.stderr.on("error", () => {});
       let tick = 0;
       setInterval(() => {
         tick += 1;
+        appendFileSync(process.argv[3], ".");
         process.stdout.write("leaked-stdout-" + tick + "\\n");
         process.stderr.write("leaked-stderr-" + tick + "\\n");
-        // Ticks land on disk too, so the test can prove the inherited pipe was
-        // still carrying data during the window it asserts nothing arrived on.
-        appendFileSync(process.argv[3], ".");
       }, 50);
       writeFileSync(process.argv[2], String(process.pid));
     `,
@@ -62,7 +71,7 @@ async function createLeakedPipeScope() {
       process.stderr.write("live-stderr\\n");
       // Inherit this root's stdout/stderr so the pipes outlive it, and detach so
       // the supervisor's process-group kill cannot reach the descendant. This is
-      // the shipped CLI shape that leaves stdio open past forced settlement.
+      // the shipped CLI shape that would leave stdio open without terminal disposal.
       const leak = spawn(
         process.execPath,
         [${JSON.stringify(leakPath)}, ${JSON.stringify(leakPidPath)}, ${JSON.stringify(leakTickPath)}],
@@ -86,9 +95,10 @@ function readTickCount(tickPath: string): number {
 
 describe.skipIf(process.platform === "win32")("supervisor forced settlement output fence", () => {
   it(
-    "delivers nothing after a force-kill fallback settles a run with open inherited pipes",
+    "delivers nothing after forced settlement with inherited pipes held by a descendant",
     async () => {
       const { cwd, rootPath, leakPidPath, leakTickPath } = await createLeakedPipeScope();
+      activePidFiles.add(leakPidPath);
       const stdoutHash = crypto.createHash("sha256");
       const stderrHash = crypto.createHash("sha256");
       const delivered: string[] = [];
@@ -118,8 +128,12 @@ describe.skipIf(process.platform === "win32")("supervisor forced settlement outp
         onStdoutRaw: (raw) => delivered.push(`stdout-raw:${raw.toString("utf8").trim()}`),
         onStderrRaw: (raw) => delivered.push(`stderr-raw:${raw.toString("utf8").trim()}`),
       });
+      if (run.pid !== undefined) {
+        activePids.add(run.pid);
+      }
 
       const leakedPid = await waitForPidFile(leakPidPath, 15_000);
+      activePidFiles.delete(leakPidPath);
       activePids.add(leakedPid);
       run.cancel("manual-cancel");
 
@@ -137,8 +151,8 @@ describe.skipIf(process.platform === "win32")("supervisor forced settlement outp
       expect(digests.every((digest) => digest.length === 64)).toBe(true);
       expect(settledDelivered).toContain("stdout:live-stdout");
       expect(settledDelivered).toContain("stderr-raw:live-stderr");
-      // The descendant kept writing into the still-open pipe across the window,
-      // so an unfenced listener would have run against the finalized hashes.
+      // The descendant stayed alive and attempted output across the terminal
+      // boundary even though adapter disposal closed the parent-side pipes.
       expect(readTickCount(leakTickPath)).toBeGreaterThan(settledTicks);
       expect(hashFailures).toEqual([]);
       expect(delivered).toEqual(settledDelivered);
